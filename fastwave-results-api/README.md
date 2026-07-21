@@ -18,7 +18,7 @@ publishing over HTTP (the CLI in this step is a stand-in) are later steps.
 - SQLAlchemy 2.x (async engine, asyncpg) for the app
 - Alembic (sync engine, psycopg2) for migrations
 - Neon Postgres (EU region)
-- [hytek-parser](../hytek-parser) (local fork, v2.3.0) for HY3 parsing
+- [hytek-parser](vendor/hytek-parser) (vendored fork, v2.3.0) for HY3 parsing
 
 ## Local setup
 
@@ -31,9 +31,14 @@ cp .env.example .env
 # edit .env with your Neon connection strings
 ```
 
-`hytek-parser` is pulled in as a local path dependency (`[tool.uv.sources]`
-in `pyproject.toml`, pointing at `../hytek-parser`) — it needs to be checked
-out as a sibling directory of this project for `uv sync` to find it.
+`hytek-parser` is vendored at `vendor/hytek-parser` and pulled in as a local
+path dependency (`[tool.uv.sources]` in `pyproject.toml`) — nothing extra to
+check out, it's part of this repo. (Earlier this pointed at `../hytek-parser`,
+a sibling directory outside the repo; that broke the first Railway deploy,
+since Railway's Root Directory setting scopes the *entire* build context to
+this folder, not the whole checked-out repo — a sibling path is invisible to
+it. Vendoring it inside the tree avoids depending on Railway's checkout
+behavior at all.)
 
 `.env` needs two Neon connection strings (see `.env.example`):
 
@@ -268,37 +273,39 @@ Two gotchas worth knowing before hand-editing a migration:
 ```
 
 **Why `railway.json` over `Procfile` + `nixpacks.toml`**: this project uses
-`uv` (a `uv.lock`, plus a local path dependency in `pyproject.toml`), not
-plain `pip`/`poetry` - Nixpacks' Python auto-detection is built around
-those and is a coin flip on correctly detecting a `uv` project across
-Nixpacks versions. `railway.json` sidesteps that entirely: `buildCommand`
-and `startCommand` are explicit and version-controlled, so there's no
-auto-detection to get wrong. Migrations aren't a separate Railway "release
-phase" step (chaining with `&&` in `startCommand` instead) - Railway
-doesn't have a Heroku-style release phase that's stable across plan tiers
-to depend on, and chaining is safe here since Alembic's revision tracking
-makes `upgrade head` idempotent and this service runs a single replica.
+`uv` (a `uv.lock`), not plain `pip`/`poetry` - Python auto-detection is built
+around those and is a coin flip on correctly detecting a `uv` project.
+`railway.json` sidesteps that entirely: `buildCommand` and `startCommand`
+are explicit and version-controlled, so there's no auto-detection to get
+wrong. In practice Railway builds this through **Railpack**
+(`"builder": "NIXPACKS"` is accepted but Railpack is what actually ran in
+our own deploy log - `RUN python -m venv ... && uv sync --no-dev --frozen`
+came from Railpack's own Python provider, not a Nixpacks toolchain), which
+still fully respects `buildCommand`/`startCommand`, so this doesn't change
+anything above. Migrations aren't a separate Railway "release phase" step
+(chaining with `&&` in `startCommand` instead) - Railway doesn't have a
+Heroku-style release phase that's stable across plan tiers to depend on,
+and chaining is safe here since Alembic's revision tracking makes
+`upgrade head` idempotent and this service runs a single replica.
 
 Python is pinned to 3.12 in both `.python-version` and
 `pyproject.toml`'s `requires-python`. `uvicorn[standard]` is a main
 dependency (not dev-only), and the start command reads Railway's `$PORT`
 directly - both already true before this step, verified again here.
 
-**Before any of this works**: `hytek-parser` is a local path dependency
-(`../hytek-parser` relative to this repo, see `[tool.uv.sources]` in
-`pyproject.toml`) - `uv sync` needs that sibling directory to exist in the
-build context. Either:
-
-- push both `fastwave-results-api` and `hytek-parser` as siblings in one
-  monorepo, and set this service's **Root Directory** to
-  `fastwave-results-api` in Railway (the full repo is still checked out,
-  so the sibling path resolves) - least change, recommended for now; or
-- host `hytek-parser` in its own git repo and switch the dependency to a
-  git source instead of a local path.
-
-Neither this repo nor its parent directory is under git yet as of this
-step - that has to happen (`git init`, push to GitHub) before the Railway
-"deploy from GitHub repo" flow is usable at all.
+**A real deploy failure already caught one thing worth knowing**:
+`hytek-parser` was originally a sibling-directory path dependency
+(`../hytek-parser`, outside this repo). The first Railway deploy failed
+with `Distribution not found at: file:///hytek-parser`, because Railway's
+Root Directory setting scopes the *entire build context* to that directory
+- it does **not** check out the whole repo and merely `cd` into a
+subfolder, so a `../` path outside Root Directory doesn't exist in the
+build at all. Fixed by vendoring `hytek-parser` inside this repo at
+`vendor/hytek-parser` (see `[tool.uv.sources]` in `pyproject.toml`) - fully
+self-contained now, no sibling-checkout assumption to get wrong.
+`tool.pytest.ini_options.testpaths = ["tests"]` was added alongside this,
+since pytest's default recursive collection would otherwise also pick up
+`vendor/hytek-parser`'s own (differently-configured) test suite.
 
 ### Settings hygiene
 
@@ -336,10 +343,15 @@ export DATABASE_URL_DIRECT=...   # production Neon, direct
 
 ### Human checklist
 
-1. Push this repo (and `hytek-parser`, per the path-dependency note above)
-   to GitHub.
-2. **Railway**: new project → deploy from the GitHub repo → region **EU
-   (Amsterdam)**, to sit near Neon's Dublin (EU) region.
+1. Repo is pushed to GitHub already (`derahhayes/swim_results_ie`,
+   monorepo containing this directory plus `hytek-parser`'s old sibling
+   location - now unused, `hytek-parser` lives at `vendor/hytek-parser`
+   inside this directory instead).
+2. **Railway**: new project → deploy from the GitHub repo → set
+   **Root Directory** to `fastwave-results-api` in the service's Settings
+   → Source (required - Railway doesn't detect `pyproject.toml`/`railway.json`
+   sitting in a subdirectory otherwise) → region **EU (Amsterdam)**, to sit
+   near Neon's Dublin (EU) region.
 3. Set env vars on the service:
    - `DATABASE_URL` - Neon **pooled** connection string, `postgresql+asyncpg://...`
    - `DATABASE_URL_DIRECT` - Neon **direct** connection string, `postgresql+psycopg2://...` (used by the `alembic upgrade head` release step)

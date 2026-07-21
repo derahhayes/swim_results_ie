@@ -156,7 +156,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
-    { name = "hytek-parser", directory = "../hytek-parser" },
+    { name = "hytek-parser", directory = "vendor/hytek-parser" },
     { name = "psycopg2-binary", specifier = ">=2.9" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
@@ -240,7 +240,7 @@ wheels = [
 [[package]]
 name = "hytek-parser"
 version = "2.3.0"
-source = { directory = "../hytek-parser" }
+source = { directory = "vendor/hytek-parser" }
 dependencies = [
     { name = "aenum" },
     { name = "attrs" },

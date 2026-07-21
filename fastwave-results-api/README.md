@@ -260,52 +260,58 @@ Two gotchas worth knowing before hand-editing a migration:
 
 ### Config in this repo
 
-`railway.json` (not a `Procfile` + `nixpacks.toml`) is the deploy config:
+A `Dockerfile` + `railway.json` (`"builder": "DOCKERFILE"`) is the deploy
+config. This started out as `railway.json` alone, targeting Railway's
+Nixpacks/Railpack auto-detection with an explicit `buildCommand`/
+`startCommand` (still a reasonable default choice over `Procfile` +
+`nixpacks.toml` for a `uv` project - see the git history on this file if
+you want that original reasoning) - but real deploys hit two different
+failures in that auto-detection layer, the second non-deterministic, which
+is why this now pins everything explicitly instead:
 
-```json
-{
-  "build": { "builder": "NIXPACKS", "buildCommand": "pip install uv && uv sync --frozen" },
-  "deploy": {
-    "startCommand": "uv run alembic upgrade head && uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT",
-    "healthcheckPath": "/healthz"
-  }
-}
-```
+1. **Path issue**: `hytek-parser` was originally a sibling-directory path
+   dependency (`../hytek-parser`, outside this repo). The deploy failed
+   with `Distribution not found at: file:///hytek-parser`, because
+   Railway's Root Directory setting scopes the *entire build context* to
+   that directory - it does not check out the whole repo and merely `cd`
+   into a subfolder, so a `../` path outside Root Directory doesn't exist
+   in the build at all. Fixed by vendoring `hytek-parser` inside this repo
+   at `vendor/hytek-parser` (see `[tool.uv.sources]` in `pyproject.toml`).
+   `tool.pytest.ini_options.testpaths = ["tests"]` was added alongside
+   this, since pytest's default recursive collection would otherwise also
+   pick up `vendor/hytek-parser`'s own (differently-configured) test suite.
+2. **Flaky uv version auto-detection**: Railway's Python+uv provider
+   (Railpack, even with `"builder": "NIXPACKS"` in `railway.json` - that's
+   accepted but Railpack is what actually ran, per
+   `RUN python -m venv ... && pip install uv==$VERSION && uv sync ...` in
+   our own deploy logs) runs `pip install uv==<auto-detected version>`.
+   One deploy produced a valid `uv==0.4.30` this way; the next, with no
+   config change, produced `pip install uv==` - an **empty** version,
+   which `pip` rejects outright. Non-deterministic behavior in a build
+   step isn't something to build around - it needs to go away entirely.
 
-**Why `railway.json` over `Procfile` + `nixpacks.toml`**: this project uses
-`uv` (a `uv.lock`), not plain `pip`/`poetry` - Python auto-detection is built
-around those and is a coin flip on correctly detecting a `uv` project.
-`railway.json` sidesteps that entirely: `buildCommand` and `startCommand`
-are explicit and version-controlled, so there's no auto-detection to get
-wrong. In practice Railway builds this through **Railpack**
-(`"builder": "NIXPACKS"` is accepted but Railpack is what actually ran in
-our own deploy log - `RUN python -m venv ... && uv sync --no-dev --frozen`
-came from Railpack's own Python provider, not a Nixpacks toolchain), which
-still fully respects `buildCommand`/`startCommand`, so this doesn't change
-anything above. Migrations aren't a separate Railway "release phase" step
-(chaining with `&&` in `startCommand` instead) - Railway doesn't have a
-Heroku-style release phase that's stable across plan tiers to depend on,
-and chaining is safe here since Alembic's revision tracking makes
-`upgrade head` idempotent and this service runs a single replica.
+The `Dockerfile` removes both failure modes at once: `uv` is copied in
+from astral's own pinned image (`COPY --from=ghcr.io/astral-sh/uv:0.4.30
+/uv /uvx /usr/local/bin/`, their documented pattern for exactly this),
+`COPY . .` brings in `vendor/hytek-parser` as part of the same build
+context (no separate step needed since it already lives inside this
+directory), and the `CMD` chains `alembic upgrade head` then `uvicorn`
+- same reasoning as before for not using a separate release-phase step
+(Railway doesn't have a Heroku-style one stable across plan tiers, and
+chaining is safe since Alembic's revision tracking makes `upgrade head`
+idempotent and this service runs a single replica). `railway.json` now
+only carries `deploy` settings (healthcheck, restart policy) - the
+Dockerfile's own `CMD` is authoritative for how the process starts.
 
-Python is pinned to 3.12 in both `.python-version` and
-`pyproject.toml`'s `requires-python`. `uvicorn[standard]` is a main
-dependency (not dev-only), and the start command reads Railway's `$PORT`
-directly - both already true before this step, verified again here.
+Python is pinned to 3.12 (`FROM python:3.12-slim`, and still in
+`.python-version`/`pyproject.toml`'s `requires-python` for local dev).
+`uvicorn[standard]` is a main dependency (not dev-only), and the `CMD`
+reads Railway's `$PORT` directly.
 
-**A real deploy failure already caught one thing worth knowing**:
-`hytek-parser` was originally a sibling-directory path dependency
-(`../hytek-parser`, outside this repo). The first Railway deploy failed
-with `Distribution not found at: file:///hytek-parser`, because Railway's
-Root Directory setting scopes the *entire build context* to that directory
-- it does **not** check out the whole repo and merely `cd` into a
-subfolder, so a `../` path outside Root Directory doesn't exist in the
-build at all. Fixed by vendoring `hytek-parser` inside this repo at
-`vendor/hytek-parser` (see `[tool.uv.sources]` in `pyproject.toml`) - fully
-self-contained now, no sibling-checkout assumption to get wrong.
-`tool.pytest.ini_options.testpaths = ["tests"]` was added alongside this,
-since pytest's default recursive collection would otherwise also pick up
-`vendor/hytek-parser`'s own (differently-configured) test suite.
+**Not tested with a local `docker build`** - Docker isn't available in the
+environment this was authored in. Written carefully and reviewed against
+astral-sh/uv's documented Docker pattern, but if the next deploy's build
+log shows anything unexpected, that's the first place to look.
 
 ### Settings hygiene
 

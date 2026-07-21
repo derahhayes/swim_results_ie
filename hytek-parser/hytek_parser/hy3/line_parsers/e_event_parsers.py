@@ -1,0 +1,158 @@
+from datetime import datetime
+from typing import Any
+
+from hytek_parser._utils import extract, get_age_group, safe_cast, select_from_enum
+from hytek_parser.hy3._utils import parse_time, parse_time_or_none
+from hytek_parser.hy3.enums import (
+    Course,
+    DisqualificationCode,
+    Gender,
+    GenderAge,
+    ResultType,
+    Stroke,
+    WithTimeTimeCode,
+)
+from hytek_parser.hy3.schemas import DisqualificationInfo, ParsedHytekFile
+
+
+def e1_parser(
+    line: str, file: ParsedHytekFile, opts: dict[str, Any]
+) -> ParsedHytekFile:
+    """Parse an E1 individual event entry."""
+    # Get swimmer
+    swimmer_code = safe_cast(int, extract(line, 4, 5))
+    swimmer = file.meet.swimmers[swimmer_code]
+
+    # Event info
+    event_gender = select_from_enum(Gender, extract(line, 14, 1))
+    event_gender_age = select_from_enum(GenderAge, extract(line, 15, 1))
+    distance = safe_cast(int, extract(line, 16, 6))
+    stroke = select_from_enum(Stroke, extract(line, 22, 1))
+    age_min, age_max = get_age_group(
+        age_min=safe_cast(int, extract(line, 23, 3)),
+        age_max=safe_cast(int, extract(line, 26, 3)),
+        swimmer_age=swimmer.age,
+    )
+    event_fee = safe_cast(float, extract(line, 33, 6))
+    event_number = extract(line, 39, 4)
+    event_course = select_from_enum(Course, extract(line, 51, 1))
+
+    # Get event
+    event = file.meet.get_or_create_event(
+        event_number,
+        distance,
+        stroke,
+        event_course,
+        event_gender,
+        event_gender_age,
+        age_min,
+        age_max,
+        event_fee,
+        relay=False,
+    )
+
+    # Add swimmer to entry
+    entry_swimmers = {1: swimmer}
+
+    # Event entry setup
+    entry_event_number = event.number
+
+    entry_seed_time = parse_time(extract(line, 52, 8))
+    entry_seed_course = select_from_enum(Course, extract(line, 60, 1))
+
+    entry_converted_seed_time = parse_time(extract(line, 43, 8))
+    entry_converted_seed_time_course = event.course
+
+    # Meet Division: col 77-79 in most MM versions, col 92-93 in MM4/MM5-7.0Fa.
+    # The two are mutually exclusive; col 77 takes precedence.
+    meet_division = extract(line, 77, 3) or extract(line, 92, 2) or None
+    exhibition = extract(line, 84, 1) == "X"
+
+    entry = event.get_or_create_entry(
+        swimmers=entry_swimmers,
+        relay=False,
+        event_number=entry_event_number,
+        seed_time=entry_seed_time,
+        seed_course=entry_seed_course,
+        converted_seed_time=entry_converted_seed_time,
+        converted_seed_time_course=entry_converted_seed_time_course,
+        meet_division=meet_division,
+        exhibition=exhibition,
+    )
+
+    # Update event
+    file.meet.last_event = (event_number, event)
+
+    return file
+
+
+def e2_parser(
+    line: str, file: ParsedHytekFile, opts: dict[str, Any]
+) -> ParsedHytekFile:
+    """Parse an E2 individual event result."""
+    event_type = select_from_enum(ResultType, extract(line, 3, 1))
+
+    time = parse_time(extract(line, 4, 8))
+    course = select_from_enum(Course, extract(line, 12, 1))
+    time_code = select_from_enum(WithTimeTimeCode, extract(line, 13, 1))
+
+    dq_info = None
+    if WithTimeTimeCode.is_dq_code(time_code):
+        # Get the DQ code
+        dq_code = select_from_enum(DisqualificationCode, extract(line, 14, 2))
+        dq_info = DisqualificationInfo(dq_code, None)
+
+    heat = safe_cast(int, extract(line, 21, 3))
+    lane = safe_cast(int, extract(line, 24, 3))
+    heat_place = safe_cast(int, extract(line, 27, 3))
+    overall_place = safe_cast(int, extract(line, 30, 4))
+
+    # previously-dropped E2 timing fields.
+    # See spec for column-offset derivation and failure-mode evidence
+    # (touchpad turn-touch misattribution in short SCY sprints).
+    # parse_time_or_none returns None for "0.00" and blank/non-numeric fields.
+    pad_time      = parse_time_or_none(extract(line, 63, 12))
+    button_1_time = parse_time_or_none(extract(line, 39, 8))
+    button_2_time = parse_time_or_none(extract(line, 47, 8))
+    button_3_time = parse_time_or_none(extract(line, 55, 8))
+    backup_4_time = parse_time_or_none(extract(line, 75, 8))
+    alt_time_code = extract(line, 96, 1) or None  # observed: 'A' / 'K' / blank
+
+    raw_date = extract(line, 88, 8).strip()
+    date_ = datetime.strptime(raw_date, "%m%d%Y").date() if raw_date else None
+
+    # Get entry
+    event_num, event = file.meet.last_event
+    entry = event.last_entry
+
+    # Get attribute prefix
+    if event_type == ResultType.PRELIM:
+        prefix = "prelim"
+    elif event_type == ResultType.SWIMOFF:
+        prefix = "swimoff"
+    elif event_type == ResultType.FINAL:
+        prefix = "finals"
+    else:
+        raise ValueError("Invalid event type!")
+
+    # Set attributes
+    setattr(entry, f"{prefix}_time", time)
+    setattr(entry, f"{prefix}_course", course)
+    setattr(entry, f"{prefix}_time_code", time_code)
+    setattr(entry, f"{prefix}_dq_info", dq_info)
+    setattr(entry, f"{prefix}_heat", heat)
+    setattr(entry, f"{prefix}_lane", lane)
+    setattr(entry, f"{prefix}_heat_place", heat_place)
+    setattr(entry, f"{prefix}_overall_place", overall_place)
+    setattr(entry, f"{prefix}_date", date_)
+    setattr(entry, f"{prefix}_pad_time", pad_time)
+    setattr(entry, f"{prefix}_button_1_time", button_1_time)
+    setattr(entry, f"{prefix}_button_2_time", button_2_time)
+    setattr(entry, f"{prefix}_button_3_time", button_3_time)
+    setattr(entry, f"{prefix}_backup_4_time", backup_4_time)
+    setattr(entry, f"{prefix}_alt_time_code", alt_time_code)
+
+    event.last_entry = entry
+    file.meet.last_event = (event_num, event)
+
+    return file

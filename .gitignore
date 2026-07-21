@@ -1,0 +1,10 @@
+# Claude Code local session/plugin state - not project source.
+.claude/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/

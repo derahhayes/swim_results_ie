@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+
+# Local ingested-file storage (LocalDirStorage / STORAGE_DIR default) -
+# runtime data, not source. See KNOWN_ISSUES.md #5.
+storage/

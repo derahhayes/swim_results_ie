@@ -97,14 +97,22 @@ async def receive_upload(
     uploaded_by_email: str,
     session: AsyncSession,
     storage: FileStorage,
+    filename: str | None = None,
 ) -> ReceivedUpload:
     """Phase 1: dedupe check, persist to storage, create the `uploads` row.
 
     Commits before returning - safe to call from an HTTP handler and hand
     the result straight back to the client, before scheduling
     process_upload as a background task for the rest.
+
+    `filename` overrides the name derived from `path_or_bytes` - callers
+    that already have the real name (the HTTP upload endpoint, from
+    UploadFile.filename) should pass it explicitly, since raw bytes alone
+    carry no filename and _normalize_input would otherwise fall back to
+    the generic "upload.hy3" placeholder.
     """
-    raw_bytes, filename = _normalize_input(path_or_bytes)
+    raw_bytes, derived_filename = _normalize_input(path_or_bytes)
+    filename = filename or derived_filename
     sha256 = hashlib.sha256(raw_bytes).hexdigest()
 
     existing_upload = (

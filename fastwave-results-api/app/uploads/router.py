@@ -58,7 +58,7 @@ async def create_upload(
     raw_bytes = await file.read()
     storage = get_storage()
 
-    received = await receive_upload(raw_bytes, user.email, session, storage)
+    received = await receive_upload(raw_bytes, user.email, session, storage, filename=file.filename)
     await write_audit_log(
         session,
         "upload.create",

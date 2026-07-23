@@ -65,6 +65,9 @@ async def test_upload_new_file_processes_and_promotes(api_client, uploader, seed
     assert resp.status_code == 201, resp.text
     upload = resp.json()
     upload_id = upload["id"]
+    # The real uploaded filename, not the generic "upload.hy3" placeholder
+    # _normalize_input falls back to for raw bytes with no name of their own.
+    assert upload["fileName"] == "fresh-relay.hy3"
 
     # httpx's ASGITransport runs Starlette BackgroundTasks synchronously,
     # in-process, before the client call returns - so by the time we get

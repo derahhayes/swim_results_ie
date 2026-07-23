@@ -4,12 +4,17 @@ from aenum import Enum, MultiValue, Unique
 
 
 class Gender(Enum):
-    """Swimmer gender."""
+    """Swimmer/event gender. Used for both D1 (swimmer) and E1/F1 (event)
+    gender fields - a real swimmer is always MALE/FEMALE, but an *event*
+    can be MIXED (e.g. mixed medley/freestyle relays at development/
+    community meets). "X" is the HY3 convention Hy-Tek Meet Manager uses
+    for this in both the E1 and F1 gender columns."""
 
     _settings_ = Unique
 
     MALE = "M"
     FEMALE = "F"
+    MIXED = "X"
     UNKNOWN = "U"
 
 

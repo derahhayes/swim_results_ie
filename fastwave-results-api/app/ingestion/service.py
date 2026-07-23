@@ -118,13 +118,25 @@ async def receive_upload(
     existing_upload = (
         await session.execute(select(Upload).where(Upload.fileSha256 == sha256))
     ).scalar_one_or_none()
-    if existing_upload is not None:
+    if existing_upload is not None and existing_upload.status != UploadStatus.FAILED:
         return ReceivedUpload(
             upload_id=existing_upload.id,
             status=existing_upload.status.value,
             duplicate=True,
             report=json.loads(existing_upload.parseReport) if existing_upload.parseReport else {},
         )
+    if existing_upload is not None:
+        # A previous attempt at this exact file failed (e.g. an ingestion
+        # bug since fixed, or a transient error) - safe to retry rather
+        # than being stuck reporting that stale failure forever. Nothing
+        # from that attempt was left committed: process_upload rolls back
+        # completely on any exception, and the file's bytes are already in
+        # storage from receive_upload's first, successful phase - so this
+        # just resets the row and lets process_upload run again.
+        existing_upload.status = UploadStatus.RECEIVED
+        existing_upload.parseReport = None
+        await session.commit()
+        return ReceivedUpload(upload_id=existing_upload.id, status=existing_upload.status.value, duplicate=False)
 
     user = await _get_or_create_user(session, uploaded_by_email)
     storage_key = storage.save(sha256, filename, raw_bytes)

@@ -379,6 +379,16 @@ async def _replace_splits(session: AsyncSession, result_id: str, splits: dict[in
         for num, t in splits.items()
         if (hs := time_to_hundredths(t)) is not None
     ]
+    if not rows:
+        # `splits` was non-empty but every value converted to None (e.g. all
+        # "0.00"/unrecorded, the same convention noted elsewhere in this
+        # file) - pg_insert(...).values([]) does NOT no-op here: SQLAlchemy
+        # compiles an empty values list to a single-row INSERT using only
+        # each column's own default (id, createdAt, updatedAt), silently
+        # omitting resultId/splitNumber/cumulativeTimeHs entirely and
+        # crashing on their NOT NULL constraints instead. Confirmed via
+        # `pg_insert(ResultSplit.__table__).values([]).compile(...)`.
+        return 0
     await session.execute(pg_insert(ResultSplit.__table__).values(rows))
     return len(rows)
 

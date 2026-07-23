@@ -15,6 +15,10 @@ from app.models.enums import Course, Gender, Stroke
 GENDER_MAP: dict[HyGender, Gender] = {
     HyGender.MALE: Gender.M,
     HyGender.FEMALE: Gender.F,
+    # Event-only in practice (mixed relays) - a real swimmer's own D1
+    # gender is never "X", so this only ever affects event-gender mapping
+    # in promote.py, not swimmer resolution in matching.py.
+    HyGender.MIXED: Gender.MIXED,
 }
 
 STROKE_MAP: dict[HyStroke, Stroke] = {

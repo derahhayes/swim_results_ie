@@ -136,6 +136,18 @@ def f2_line(round_code: str, time_str: str, course: str, heat: int, lane: int, d
     return _finish(buf)
 
 
+def g1_line(round_code: str, splits: dict[int, float]) -> str:
+    """G1 split-time line. Byte layout empirically verified against a real
+    hytek_parser g1_parser round-trip (parser reads split_num at 1-based
+    cols 4-5, split_time at cols 6-13, repeating every 11 cols)."""
+    buf = _blank("G1")
+    _set(buf, 3, 1, round_code, right=False)
+    for i, (num, t) in enumerate(splits.items()):
+        _set(buf, 4 + 11 * i, 2, num)
+        _set(buf, 6 + 11 * i, 8, f"{t:.2f}")
+    return _finish(buf)
+
+
 def f3_line(swimmer_meet_ids: list[str]) -> str:
     buf = _blank("F3")
     for i, meet_id in enumerate(swimmer_meet_ids):
@@ -205,6 +217,55 @@ def build_synthetic_relay_hy3(
     lines += relay_block("AAAA", "A", swimmer_ids_a, time_a)
     lines += relay_block("AAAA", "B", swimmer_ids_b, time_b)
     lines += relay_block("BBBB", "A", swimmer_ids_bbbb_a, time_bbbb_a)
+
+    lines.append("Z0")
+
+    return ("\n".join(lines) + "\n").encode("cp1252")
+
+
+def build_synthetic_mixed_relay_hy3(
+    medley_swimmer_ids: list[str],
+    freestyle_swimmer_ids: list[str],
+    *,
+    medley_time: str = "245.30",
+    freestyle_time: str = "210.15",
+    meet_name: str = "Synthetic Mixed Relay Meet",
+    start_date: str = "06012026",
+    end_date: str = "06012026",
+    name_prefix: str = "",
+    club_code: str = "MIXD",
+) -> bytes:
+    """One mixed 4x50 medley relay (event 20) + one mixed 4x50 free relay
+    (event 21), one club, one team each, alternating M/F swimmers - the
+    gender Gender.MIXED/"X" case KNOWN_ISSUES.md documents.
+
+    GenderAge has no "mixed" member in hytek_parser (only MEN_S/BOY_S/
+    WOMEN_S/GIRL_S/UNKNOWN) - passed as "X" anyway since it falls back to
+    UNKNOWN safely and nothing in promote.py reads gender_age at all.
+    """
+    all_ids = medley_swimmer_ids + freestyle_swimmer_ids
+    lines: list[str] = [
+        a1_line(),
+        b1_line(meet_name, "Test Pool", start_date, end_date),
+        b2_line("L"),
+        c1_line(club_code, "Mixed Swim Club", "Mixed SC", "MU"),
+        c2_line(),
+        c3_line(),
+    ]
+    for i, meet_id in enumerate(all_ids):
+        gender = "M" if i % 2 == 0 else "F"
+        lines.append(d1_line(gender, meet_id, f"{name_prefix}Last{i}", f"{name_prefix}First{i}", "01012000", "26"))
+
+    lines += [
+        f1_line(club_code, "A", "X", "X", 200, "E", "20", "L"),
+        f2_line("F", medley_time, "L", 1, 1, start_date),
+        f3_line(medley_swimmer_ids),
+    ]
+    lines += [
+        f1_line(club_code, "A", "X", "X", 200, "A", "21", "L"),
+        f2_line("F", freestyle_time, "L", 1, 1, start_date),
+        f3_line(freestyle_swimmer_ids),
+    ]
 
     lines.append("Z0")
 

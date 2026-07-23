@@ -92,3 +92,57 @@ accident. `LocalDirStorage` remains the default for dev/test - no R2
 credentials needed to run the test suite (R2-specific tests mock the S3
 client via `moto`). No migration needed for this fix; the refresh_tokens
 migration added alongside it in Step 5 is revision `5fca10e63ac1`.
+
+## 6. ~~Mixed-gender relay events crashed the entire import~~ (resolved)
+
+A real production file (80 clubs, 559 swimmers, ~3,760 results) failed
+ingestion outright with `IntegrityError: null value in column "resultId"
+of relation "result_splits"`. Two independent bugs, one masking the other:
+
+- **The crash** (`app/ingestion/promote.py::_replace_splits`): when every
+  split on a relay result converts to `None` via `time_to_hundredths`
+  (Hy-Tek writes "0.00" for an unrecorded split, same convention as
+  elsewhere in this file), the filtered `rows` list ends up empty, and
+  `pg_insert(ResultSplit.__table__).values([])` does **not** no-op -
+  SQLAlchemy compiles it to a single-row `INSERT` using only each
+  column's own default (`id`, `createdAt`, `updatedAt`), silently
+  omitting `resultId`/`splitNumber`/`cumulativeTimeHs` and violating
+  their `NOT NULL` constraints. Confirmed by compiling that exact
+  statement directly. Since Step 2 promotes a whole file in one
+  transaction, this aborted the entire import, including ~3,750
+  otherwise-valid results that had nothing to do with the bad row.
+  Fixed by returning early (`return 0`) when the filtered list is empty,
+  same as the already-correct `if not splits: return 0` guard just above
+  it - `_bulk_replace_splits` (the individual-results path) never had
+  this bug, since `_chunks([])` already returns no batches at all.
+
+- **The real data-model gap**: the same file had genuine mixed-gender
+  relay events (a mixed medley + a mixed freestyle relay, common at
+  development/community meets). Both our `GENDER_MAP`
+  (`app/ingestion/_mappings.py`) and the vendored `hytek_parser.hy3.
+  enums.Gender` enum had only `MALE`/`FEMALE`/`UNKNOWN` - HY3's own "X"
+  ("mixed") code for the E1/F1 gender field had nowhere to map to, so
+  `select_from_enum` fell back to `Gender.UNKNOWN`, and `_upsert_events`
+  correctly (if unhelpfully) rejected the event as `event_unmapped`.
+  Fixed by adding `MIXED = "X"` to both `app.models.enums.Gender` and
+  the vendored `hytek_parser.hy3.enums.Gender` (migration
+  `cea421c67009` adds `'X'` to the Postgres `gender` enum type via
+  `ALTER TYPE ... ADD VALUE`, which needed its own revision - it can run
+  inside a normal transaction on modern Postgres, but only as long as
+  the new value isn't *used* in that same transaction).
+
+Also fixed while addressing this: `app.ingestion.service.receive_upload`'s
+sha256-dedup check used to treat *any* existing `uploads` row with a
+matching hash as a permanent duplicate, regardless of status - meaning a
+file that failed once (for either reason above, or anything else) could
+never be successfully retried by re-uploading the same bytes, only ever
+re-reporting the stale failure. It now resets and retries a `FAILED` row
+instead of short-circuiting on it.
+
+`tests/ingestion/relay_fixture.py::build_synthetic_mixed_relay_hy3` is
+the fixture covering the mixed-gender path;
+`tests/ingestion/test_relay_ingest.py`'s
+`test_relay_result_with_all_unrecorded_splits_does_not_crash` and
+`test_unmapped_event_is_isolated_reject_not_a_crash` cover the crash and
+isolation behavior; `tests/ingestion/test_failed_upload_retry.py` covers
+the retry fix.

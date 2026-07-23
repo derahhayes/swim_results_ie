@@ -196,7 +196,7 @@ async def process_upload(
         swimmer_resolutions = await resolve_swimmers(
             session, parsed.meet.swimmers, clubs_by_code, upload.id, report
         )
-        await promote(session, parsed.meet, raw_lines, clubs_by_code, swimmer_resolutions, report)
+        meet_id = await promote(session, parsed.meet, raw_lines, clubs_by_code, swimmer_resolutions, report)
     except Exception as exc:  # noqa: BLE001
         # Roll back the whole attempt rather than leave partially-promoted
         # data. `upload` is now stale/expired (rollback expires
@@ -215,6 +215,7 @@ async def process_upload(
     final_status = UploadStatus.NEEDS_REVIEW if report.swimmers_needs_review > 0 else UploadStatus.PROMOTED
     report.status = final_status.value
     upload.status = final_status
+    upload.meetId = meet_id
     upload.parseReport = report.to_json()
 
     await session.commit()

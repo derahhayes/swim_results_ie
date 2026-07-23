@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest_asyncio
 from sqlalchemy import func, select
 
-from app.models import Upload
+from app.models import Meet, Upload
 from tests.api.auth_helpers import auth_headers, grant_roles, register_verified_user
 from tests.ingestion.relay_fixture import build_synthetic_relay_hy3
 
@@ -43,7 +43,7 @@ async def test_upload_rejects_non_hy3_extension(api_client, uploader):
     assert resp.status_code == 422
 
 
-async def test_upload_new_file_processes_and_promotes(api_client, uploader, seeded_meets):
+async def test_upload_new_file_processes_and_promotes(api_client, uploader, seeded_meets, db_session):
     # meet_name/name_prefix both need to be unique per synthetic upload:
     # promote.py upserts meets on (name, startDate) and relay results on
     # (eventId, clubId, relayTeamId, round), so reusing the default meet
@@ -72,6 +72,15 @@ async def test_upload_new_file_processes_and_promotes(api_client, uploader, seed
     detail = await api_client.get(f"/api/v1/uploads/{upload_id}", headers=auth_headers(uploader["access_token"]))
     assert detail.status_code == 200
     assert detail.json()["status"] == "promoted"
+    # The only way to discover which meet an upload produced (so an admin
+    # can find and publish it) - previously always null, since promote()
+    # discarded the meetId it computed instead of returning it.
+    meet_id = detail.json()["meetId"]
+    assert meet_id
+
+    meet_row = await db_session.get(Meet, meet_id)
+    assert meet_row is not None
+    assert meet_row.name == "Upload Test Meet 1"
 
 
 async def test_upload_duplicate_hash_is_idempotent(api_client, uploader, seeded_meets, db_session):

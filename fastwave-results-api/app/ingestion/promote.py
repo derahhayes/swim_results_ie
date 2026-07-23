@@ -536,8 +536,14 @@ async def promote(
     clubs_by_code: dict[str, Club],
     swimmer_resolutions: dict[int, SwimmerResolution],
     report: ParseReport,
-) -> None:
-    """Promote a fully-parsed meet into the DB. Caller owns the transaction."""
+) -> str:
+    """Promote a fully-parsed meet into the DB. Caller owns the transaction.
+
+    Returns the meetId - the one place that ID exists is _upsert_meet's
+    return value, and callers (app.ingestion.service.process_upload) need
+    it to set uploads.meetId, otherwise there'd be no way to discover
+    which meet an upload resulted in without a raw DB query.
+    """
     meet_id, meet_course = await _upsert_meet(session, meet, report)
     event_ids = await _upsert_events(session, meet_id, meet.events, meet_course, report)
     raw_blocks = build_raw_blocks(raw_lines)
@@ -551,3 +557,5 @@ async def promote(
     await _promote_relays(
         session, meet, meet_id, meet_course, event_ids, swimmer_resolutions, clubs_by_code, raw_blocks, report
     )
+
+    return meet_id

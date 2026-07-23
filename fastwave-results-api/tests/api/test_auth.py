@@ -24,6 +24,18 @@ async def test_register_then_duplicate_email_is_409(api_client):
     assert second.status_code == 409
 
 
+async def test_register_accepts_name_as_alias_for_display_name(api_client):
+    # Lovable-generated forms send "name", not "displayName" - the API
+    # accepts either rather than depending on the frontend matching our
+    # internal column name exactly (see the 422 this caused in practice).
+    email = unique_email("namealias")
+    resp = await api_client.post(
+        "/api/v1/auth/register", json={"email": email, "password": "hunter2-pass", "name": "Dermot Hayes"}
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["displayName"] == "Dermot Hayes"
+
+
 async def test_login_before_verification_is_401(api_client):
     user = await register_user(api_client)
     resp = await api_client.post("/api/v1/auth/login", data={"username": user["email"], "password": user["password"]})

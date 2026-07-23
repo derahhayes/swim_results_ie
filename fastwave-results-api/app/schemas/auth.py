@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field
 
 
 class _ORMModel(BaseModel):
@@ -16,7 +16,12 @@ class _ORMModel(BaseModel):
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
-    displayName: str = Field(min_length=1, max_length=200)
+    # Accept "name" as well as "displayName" - Lovable-generated forms tend
+    # to use the more generic "name", and there's no reason to make the
+    # frontend match our internal column name exactly.
+    displayName: str = Field(
+        min_length=1, max_length=200, validation_alias=AliasChoices("displayName", "name")
+    )
 
 
 class VerifyEmailRequest(BaseModel):

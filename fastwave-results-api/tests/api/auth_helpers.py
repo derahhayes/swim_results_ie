@@ -44,7 +44,7 @@ async def verify_email(client: AsyncClient, user_id: str) -> None:
 
 
 async def login(client: AsyncClient, email: str, password: str) -> dict:
-    resp = await client.post("/api/v1/auth/login", data={"username": email, "password": password})
+    resp = await client.post("/api/v1/auth/login", json={"email": email, "password": password})
     assert resp.status_code == 200, resp.text
     return resp.json()
 

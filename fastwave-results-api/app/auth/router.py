@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +25,7 @@ from app.models import CoachAffiliation, SwimmerClaim, User
 from app.schemas.auth import (
     AffiliationSummary,
     ClaimSummary,
+    LoginRequest,
     LogoutRequest,
     MessageResponse,
     PasswordResetConfirmRequest,
@@ -89,14 +89,15 @@ async def _issue_tokens(session: AsyncSession, user_id: str) -> TokenResponse:
 
 
 @router.post("/auth/login", response_model=TokenResponse)
-async def login(
-    form_data: OAuth2PasswordRequestForm = Depends(), session: AsyncSession = Depends(get_db)
-) -> TokenResponse:
-    # OAuth2PasswordRequestForm's "username" field carries the email.
+async def login(body: LoginRequest, session: AsyncSession = Depends(get_db)) -> TokenResponse:
+    # Plain JSON body, not OAuth2PasswordRequestForm's form-encoded
+    # username/password - every other endpoint here is JSON, and a
+    # frontend that POSTs JSON everywhere (Lovable's generated client did)
+    # would otherwise hit this one endpoint's body as entirely empty.
     user = (
-        await session.execute(select(User).where(User.email == form_data.username.lower()))
+        await session.execute(select(User).where(User.email == body.email.lower()))
     ).scalar_one_or_none()
-    if user is None or not verify_password(form_data.password, user.passwordHash):
+    if user is None or not verify_password(body.password, user.passwordHash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",

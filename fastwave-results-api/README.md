@@ -250,7 +250,7 @@ themselves. Response shapes live in `app/schemas/auth.py`,
 ```
 POST /api/v1/auth/register              {email, password, displayName} -> 201, sends a "verify your email" email (logged, not sent - see Email below)
 POST /api/v1/auth/verify-email          {token} -> sets emailVerifiedAt
-POST /api/v1/auth/login                 OAuth2 password form (username=email, password) -> {access_token, refresh_token, token_type}
+POST /api/v1/auth/login                 {email, password} -> {access_token, refresh_token, token_type}
 POST /api/v1/auth/refresh               {refresh_token} -> rotates: old token is revoked, both new tokens returned
 POST /api/v1/auth/logout                {refresh_token} -> revokes it (idempotent)
 POST /api/v1/auth/password-reset/request   {email} -> always 200, same response whether or not the email is registered

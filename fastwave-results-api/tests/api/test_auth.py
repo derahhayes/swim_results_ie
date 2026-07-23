@@ -38,7 +38,7 @@ async def test_register_accepts_name_as_alias_for_display_name(api_client):
 
 async def test_login_before_verification_is_401(api_client):
     user = await register_user(api_client)
-    resp = await api_client.post("/api/v1/auth/login", data={"username": user["email"], "password": user["password"]})
+    resp = await api_client.post("/api/v1/auth/login", json={"email": user["email"], "password": user["password"]})
     assert resp.status_code == 401
     assert "not verified" in resp.json()["detail"].lower()
 
@@ -73,7 +73,7 @@ async def test_login_is_case_insensitive_on_email(api_client):
 async def test_login_wrong_password_is_401(api_client):
     user = await register_verified_user(api_client)
     resp = await api_client.post(
-        "/api/v1/auth/login", data={"username": user["email"], "password": "totally-wrong"}
+        "/api/v1/auth/login", json={"email": user["email"], "password": "totally-wrong"}
     )
     assert resp.status_code == 401
 
@@ -151,12 +151,12 @@ async def test_password_reset_confirm_changes_password_and_revokes_sessions(api_
     assert stale_refresh.status_code == 401
 
     old_password_login = await api_client.post(
-        "/api/v1/auth/login", data={"username": user["email"], "password": user["password"]}
+        "/api/v1/auth/login", json={"email": user["email"], "password": user["password"]}
     )
     assert old_password_login.status_code == 401
 
     new_password_login = await api_client.post(
-        "/api/v1/auth/login", data={"username": user["email"], "password": "brand-new-pass"}
+        "/api/v1/auth/login", json={"email": user["email"], "password": "brand-new-pass"}
     )
     assert new_password_login.status_code == 200
 

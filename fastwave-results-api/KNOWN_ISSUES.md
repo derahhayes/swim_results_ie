@@ -73,20 +73,22 @@ against (e.g. confirming splits align exactly with leg boundaries for
 every stroke/distance combination). Left unset rather than shipping an
 unverified formula.
 
-## 5. `LocalDirStorage` (STORAGE_DIR) does not survive a Railway redeploy
+## 5. ~~`LocalDirStorage` (STORAGE_DIR) does not survive a Railway redeploy~~ (resolved)
 
-Railway containers don't persist local disk across deploys/restarts/scale
-events - anything `LocalDirStorage` (`app/ingestion/storage.py`) writes
-under `STORAGE_DIR` is gone the moment the container is replaced.
+Was acceptable through Step 4 (ingestion fully re-runnable, demo seeded via
+CLI rather than real uploads) but not once Step 5 exposes uploads to real
+users - a club uploading a HY3 file and then losing the original on the
+next deploy is a real problem (no re-download, no re-processing from the
+source file if a bug is found later).
 
-Acceptable through Step 4: ingestion is fully re-runnable (Step 2's
-promotion is idempotent) and the Railway demo is seeded via
-`scripts/seed_demo.sh` + the CLI, not a real upload flow, so nothing
-currently depends on a previously-stored raw file surviving a redeploy.
-
-**Not acceptable once Step 5 exposes uploads to real users** - a club
-uploading a HY3 file and then losing the original on the next deploy is a
-real problem (no re-download, no re-processing from the source file if a
-bug is found later). Move `FileStorage` to an S3-compatible backend (e.g.
-Cloudflare R2) before then; the `FileStorage` protocol already exists
-specifically so this is a new implementation, not a caller-side rewrite.
+Fixed in Step 5: `app/ingestion/storage_r2.py::R2Storage` implements the
+same `FileStorage` protocol against Cloudflare R2 (S3-compatible, via
+boto3) - callers (`app.ingestion.service`) never changed, only which
+backend `app.ingestion.storage.get_storage()` returns. `STORAGE_BACKEND`
+(`local` | `r2`) selects the backend; `app.config.Settings` fails loudly
+at startup if `ENVIRONMENT=production` and `STORAGE_BACKEND` isn't `r2`,
+so production can no longer boot on the non-persistent local backend by
+accident. `LocalDirStorage` remains the default for dev/test - no R2
+credentials needed to run the test suite (R2-specific tests mock the S3
+client via `moto`). No migration needed for this fix; the refresh_tokens
+migration added alongside it in Step 5 is revision `5fca10e63ac1`.

@@ -1,3 +1,4 @@
+from app.auth.models import RefreshToken
 from app.models.base import Base
 from app.models.clubs import Club
 from app.models.ingestion import AppSetting, AuditLog, MatchReview, Upload
@@ -22,4 +23,5 @@ __all__ = [
     "CoachAffiliation",
     "SwimmerClaim",
     "User",
+    "RefreshToken",
 ]

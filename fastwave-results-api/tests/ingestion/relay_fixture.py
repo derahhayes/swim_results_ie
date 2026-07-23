@@ -153,11 +153,29 @@ def build_synthetic_relay_hy3(
     time_a: str = "120.45",
     time_b: str = "125.10",
     time_bbbb_a: str = "121.99",
+    meet_name: str = "Synthetic Relay Meet",
+    start_date: str = "06012026",
+    end_date: str = "06012026",
+    name_prefix: str = "",
 ) -> bytes:
-    """4x50 free relay, event "9": club AAAA fields A+B teams, BBBB fields an A team."""
+    """4x50 free relay, event "9": club AAAA fields A+B teams, BBBB fields an A team.
+
+    meet_name/start_date default to the values every existing caller
+    relies on (tests/api/conftest.py's session-scoped seeded_meets in
+    particular) - override them when a test needs a distinct meet row
+    rather than upserting into that shared one (promote.py's meet upsert
+    keys on (name, startDate)).
+
+    name_prefix defaults to "" so existing callers keep the exact
+    "Last0"/"First0" etc names some tests match on directly (e.g.
+    tests/api/test_relay.py's `firstName == "First0"` lookup, which uses
+    scalar_one() and would break if more than one row matched) - pass a
+    unique prefix for any new synthetic upload so its swimmers can never
+    collide by (lastName, firstName, dateOfBirth) with another test's.
+    """
     lines: list[str] = [
         a1_line(),
-        b1_line("Synthetic Relay Meet", "Test Pool", "06012026", "06012026"),
+        b1_line(meet_name, "Test Pool", start_date, end_date),
         b2_line("L"),
         c1_line("AAAA", "Aaaa Swim Club", "Aaaa SC", "MU"),
         c2_line(),
@@ -165,7 +183,7 @@ def build_synthetic_relay_hy3(
     ]
     for meet_id, (last, first) in zip(
         swimmer_ids_a + swimmer_ids_b,
-        [(f"Last{i}", f"First{i}") for i in range(len(swimmer_ids_a) + len(swimmer_ids_b))],
+        [(f"{name_prefix}Last{i}", f"{name_prefix}First{i}") for i in range(len(swimmer_ids_a) + len(swimmer_ids_b))],
     ):
         lines.append(d1_line("M", meet_id, last, first, "01012000", "26"))
 
@@ -175,7 +193,7 @@ def build_synthetic_relay_hy3(
         c3_line(),
     ]
     for i, meet_id in enumerate(swimmer_ids_bbbb_a):
-        lines.append(d1_line("M", meet_id, f"BLast{i}", f"BFirst{i}", "01012000", "26"))
+        lines.append(d1_line("M", meet_id, f"{name_prefix}BLast{i}", f"{name_prefix}BFirst{i}", "01012000", "26"))
 
     def relay_block(team_code: str, letter: str, swimmer_ids: list[str], time_str: str) -> list[str]:
         return [

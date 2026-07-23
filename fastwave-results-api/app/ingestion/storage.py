@@ -48,3 +48,17 @@ class LocalDirStorage:
 
     def load(self, storage_key: str) -> bytes:
         return (self.base_dir / storage_key).read_bytes()
+
+
+def get_storage() -> FileStorage:
+    """Build the FileStorage backend selected by STORAGE_BACKEND.
+
+    Lazily imports R2Storage (and boto3) so the local/dev/test path never
+    pays for it.
+    """
+    backend = get_settings().storage_backend.lower()
+    if backend == "r2":
+        from app.ingestion.storage_r2 import R2Storage
+
+        return R2Storage()
+    return LocalDirStorage()

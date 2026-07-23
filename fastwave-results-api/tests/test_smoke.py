@@ -15,6 +15,7 @@ EXPECTED_TABLES = {
     "match_reviews",
     "audit_log",
     "app_settings",
+    "refresh_tokens",
 }
 
 

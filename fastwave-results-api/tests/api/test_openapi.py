@@ -61,7 +61,14 @@ async def test_all_v1_endpoints_have_named_response_schemas(api_client):
             ok = responses.get("200") or responses.get("201")
             if ok is None:
                 continue
-            content = ok.get("content", {}).get("application/json", {})
+
+            ok_content = ok.get("content", {})
+            if "application/json" not in ok_content:
+                # A genuinely non-JSON response (e.g. the coach-view CSV
+                # export) - nothing here for Lovable's JSON codegen to see.
+                continue
+
+            content = ok_content["application/json"]
             assert "schema" in content, f"{method.upper()} {path} has no JSON schema"
             response_schema = content["schema"]
 

@@ -96,12 +96,42 @@ async def resolve_swimmers(
 ) -> dict[int, SwimmerResolution]:
     """Resolve every swimmer in the meet to a DB row (or flag for review).
 
-    Order: (a) exact registrationNo match; (b) exact
-    (lastName, firstName, dateOfBirth) match in the same club; (c) multiple
-    name/DOB candidates, or a single one in a different club, is ambiguous -
-    a match_reviews row is created and that swimmer is excluded from
-    promotion; (d) no match at all creates a new swimmer.
+    Order: (a) a previously-resolved match_reviews row for this upload
+    (POST /match-reviews/{id}/resolve, then this upload reprocessed) wins
+    outright; (b) exact registrationNo match; (c) exact (lastName,
+    firstName, dateOfBirth) match in the same club; (d) multiple name/DOB
+    candidates, or a single one in a different club, is ambiguous - a
+    match_reviews row is created (unless (a) already covers it) and that
+    swimmer is excluded from promotion; (e) no match at all creates a new
+    swimmer.
     """
+    existing_reviews = (
+        (await session.execute(select(MatchReview).where(MatchReview.uploadId == upload_id))).scalars().all()
+    )
+    already_reviewed_meet_ids: set[int] = set()
+    resolved_swimmer_id_by_meet_id: dict[int, str] = {}
+    for review in existing_reviews:
+        source = json.loads(review.sourceData)
+        meet_sw_id = source.get("meetSwimmerId")
+        if meet_sw_id is None:
+            continue
+        already_reviewed_meet_ids.add(meet_sw_id)
+        if review.resolvedSwimmerId is not None:
+            resolved_swimmer_id_by_meet_id[meet_sw_id] = review.resolvedSwimmerId
+
+    resolved_swimmers: dict[str, DbSwimmer] = {}
+    if resolved_swimmer_id_by_meet_id:
+        rows = (
+            (
+                await session.execute(
+                    select(DbSwimmer).where(DbSwimmer.id.in_(set(resolved_swimmer_id_by_meet_id.values())))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        resolved_swimmers = {r.id: r for r in rows}
+
     reg_nos = {
         s.usa_swimming_id.strip()
         for s in hy_swimmers.values()
@@ -151,6 +181,14 @@ async def resolve_swimmers(
         reg_no = (hy.usa_swimming_id or "").strip() or None
         gender = GENDER_MAP.get(hy.gender)
 
+        resolved = resolved_swimmers.get(resolved_swimmer_id_by_meet_id.get(meet_id))
+        if resolved is not None:
+            if resolved.clubId != club.id:
+                resolved.clubId = club.id
+            resolutions[meet_id] = SwimmerResolution(resolved, created=False, needs_review=False)
+            report.swimmers_matched += 1
+            continue
+
         if gender is None:
             report.add_reject(
                 "unknown_gender",
@@ -196,26 +234,29 @@ async def resolve_swimmers(
             continue
 
         # Ambiguous: multiple name+DOB candidates, or one in a different club.
-        review = MatchReview(
-            uploadId=upload_id,
-            sourceData=json.dumps(
-                {
-                    "meetSwimmerId": meet_id,
-                    "firstName": hy.first_name,
-                    "lastName": hy.last_name,
-                    "nickName": hy.nick_name,
-                    "middleInitial": hy.middle_initial,
-                    "registrationNo": reg_no,
-                    "dateOfBirth": hy.date_of_birth.isoformat() if hy.date_of_birth else None,
-                    "gender": hy.gender.value,
-                    "age": hy.age,
-                    "citizenship": hy.citizenship,
-                    "teamCode": hy.team_code,
-                }
-            ),
-            candidateIds=json.dumps([c.id for c in candidates]),
-        )
-        session.add(review)
+        # Don't create a second match_reviews row on a reprocessing pass for
+        # a swimmer that's already pending review from an earlier pass.
+        if meet_id not in already_reviewed_meet_ids:
+            review = MatchReview(
+                uploadId=upload_id,
+                sourceData=json.dumps(
+                    {
+                        "meetSwimmerId": meet_id,
+                        "firstName": hy.first_name,
+                        "lastName": hy.last_name,
+                        "nickName": hy.nick_name,
+                        "middleInitial": hy.middle_initial,
+                        "registrationNo": reg_no,
+                        "dateOfBirth": hy.date_of_birth.isoformat() if hy.date_of_birth else None,
+                        "gender": hy.gender.value,
+                        "age": hy.age,
+                        "citizenship": hy.citizenship,
+                        "teamCode": hy.team_code,
+                    }
+                ),
+                candidateIds=json.dumps([c.id for c in candidates]),
+            )
+            session.add(review)
         resolutions[meet_id] = SwimmerResolution(None, created=False, needs_review=True)
         report.swimmers_needs_review += 1
         report.add_reject(

@@ -1,4 +1,12 @@
-"""ingest_file: the single entry point Step 5's upload endpoint will reuse."""
+"""ingest_file: the entry point the ingestion CLI and Step 2-4 tests use.
+
+Split into two phases (receive_upload, process_upload) so Step 5's HTTP
+upload endpoint can return the `uploads` row immediately (status=RECEIVED)
+and run the rest as a FastAPI BackgroundTask, without blocking the
+response on a potentially-slow parse+promote. ingest_file itself is just
+receive_upload followed by process_upload, synchronously - unchanged
+behavior for the CLI and every caller that wants to await the whole thing.
+"""
 
 import builtins
 import hashlib
@@ -6,7 +14,7 @@ import json
 import os
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Union
 
@@ -59,6 +67,14 @@ class IngestResult:
     duplicate: bool = False
 
 
+@dataclass
+class ReceivedUpload:
+    upload_id: str
+    status: str
+    duplicate: bool
+    report: dict = field(default_factory=dict)
+
+
 async def _get_or_create_user(session: AsyncSession, email: str) -> User:
     existing = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
     if existing is not None:
@@ -69,39 +85,37 @@ async def _get_or_create_user(session: AsyncSession, email: str) -> User:
     return user
 
 
-async def ingest_file(
+def _normalize_input(path_or_bytes: Union[str, Path, bytes]) -> tuple[bytes, str]:
+    if isinstance(path_or_bytes, (str, Path)):
+        source_path = Path(path_or_bytes)
+        return source_path.read_bytes(), source_path.name
+    return path_or_bytes, "upload.hy3"
+
+
+async def receive_upload(
     path_or_bytes: Union[str, Path, bytes],
     uploaded_by_email: str,
     session: AsyncSession,
-    storage: FileStorage | None = None,
-) -> IngestResult:
-    """Ingest one HY3 file: dedupe, parse, resolve identities, promote.
+    storage: FileStorage,
+) -> ReceivedUpload:
+    """Phase 1: dedupe check, persist to storage, create the `uploads` row.
 
-    `path_or_bytes` may be a path to a file on disk, or raw file bytes
-    (e.g. from an HTTP upload in Step 5). Either way the file is persisted
-    via `storage` before parsing.
+    Commits before returning - safe to call from an HTTP handler and hand
+    the result straight back to the client, before scheduling
+    process_upload as a background task for the rest.
     """
-    storage = storage or LocalDirStorage()
-
-    if isinstance(path_or_bytes, (str, Path)):
-        source_path = Path(path_or_bytes)
-        raw_bytes = source_path.read_bytes()
-        filename = source_path.name
-    else:
-        raw_bytes = path_or_bytes
-        filename = "upload.hy3"
-
+    raw_bytes, filename = _normalize_input(path_or_bytes)
     sha256 = hashlib.sha256(raw_bytes).hexdigest()
 
     existing_upload = (
         await session.execute(select(Upload).where(Upload.fileSha256 == sha256))
     ).scalar_one_or_none()
     if existing_upload is not None:
-        return IngestResult(
+        return ReceivedUpload(
             upload_id=existing_upload.id,
             status=existing_upload.status.value,
-            report=json.loads(existing_upload.parseReport) if existing_upload.parseReport else {},
             duplicate=True,
+            report=json.loads(existing_upload.parseReport) if existing_upload.parseReport else {},
         )
 
     user = await _get_or_create_user(session, uploaded_by_email)
@@ -116,10 +130,32 @@ async def ingest_file(
         status=UploadStatus.RECEIVED,
     )
     session.add(upload)
-    await session.flush()
+    await session.commit()
+
+    return ReceivedUpload(upload_id=upload.id, status=upload.status.value, duplicate=False)
+
+
+async def process_upload(
+    upload_id: str,
+    session: AsyncSession,
+    storage: FileStorage,
+) -> IngestResult:
+    """Phase 2: checksum-validate, parse, resolve identities, promote.
+
+    Assumes `upload_id` already exists (status=RECEIVED, from
+    receive_upload) and updates that same row throughout rather than
+    creating a new one - this is the slow part, meant to be run from a
+    BackgroundTask after receive_upload has already returned to the
+    client (or synchronously right after, for callers like the CLI and
+    tests that want to await the whole thing - see ingest_file).
+    """
+    upload = await session.get(Upload, upload_id)
+    if upload is None:
+        raise ValueError(f"No upload with id {upload_id!r}")
+
+    raw_bytes = storage.load(upload.storageKey)
 
     report = ParseReport(status=UploadStatus.RECEIVED.value)
-
     raw_lines = raw_bytes.decode(HY3_ENCODING).splitlines()
 
     checksum_report = validate_lines(raw_lines)
@@ -163,27 +199,18 @@ async def ingest_file(
         await promote(session, parsed.meet, raw_lines, clubs_by_code, swimmer_resolutions, report)
     except Exception as exc:  # noqa: BLE001
         # Roll back the whole attempt rather than leave partially-promoted
-        # data. Rollback undoes the *user* row too (it was only flushed,
-        # never committed, in this same transaction) - re-create it before
-        # referencing it as the failure record's uploadedBy FK.
+        # data. `upload` is now stale/expired (rollback expires
+        # session-tied objects) but the row itself survives - it was
+        # committed back in receive_upload, before this phase started - so
+        # re-fetch it fresh rather than recreating a new upload row.
         await session.rollback()
+        upload = await session.get(Upload, upload_id)
         report.status = UploadStatus.FAILED.value
         report.error = f"{type(exc).__name__}: {exc}"[:4000]
-        user = await _get_or_create_user(session, uploaded_by_email)
-        failed_upload = Upload(
-            uploadedBy=user.id,
-            fileName=filename,
-            fileSha256=sha256,
-            storageKey=storage_key,
-            format="hy3",
-            status=UploadStatus.FAILED,
-            parseReport=report.to_json(),
-        )
-        session.add(failed_upload)
+        upload.status = UploadStatus.FAILED
+        upload.parseReport = report.to_json()
         await session.commit()
-        return IngestResult(
-            upload_id=failed_upload.id, status=UploadStatus.FAILED.value, report=report.to_dict()
-        )
+        return IngestResult(upload_id=upload.id, status=UploadStatus.FAILED.value, report=report.to_dict())
 
     final_status = UploadStatus.NEEDS_REVIEW if report.swimmers_needs_review > 0 else UploadStatus.PROMOTED
     report.status = final_status.value
@@ -193,3 +220,27 @@ async def ingest_file(
     await session.commit()
 
     return IngestResult(upload_id=upload.id, status=final_status.value, report=report.to_dict())
+
+
+async def ingest_file(
+    path_or_bytes: Union[str, Path, bytes],
+    uploaded_by_email: str,
+    session: AsyncSession,
+    storage: FileStorage | None = None,
+) -> IngestResult:
+    """Ingest one HY3 file end to end: dedupe, parse, resolve identities, promote.
+
+    `path_or_bytes` may be a path to a file on disk, or raw file bytes.
+    Convenience wrapper around receive_upload + process_upload for callers
+    (the ingestion CLI, the whole Step 2-4 test suite) that want to await
+    the complete result rather than split it across a background task.
+    """
+    storage = storage or LocalDirStorage()
+
+    received = await receive_upload(path_or_bytes, uploaded_by_email, session, storage)
+    if received.duplicate:
+        return IngestResult(
+            upload_id=received.upload_id, status=received.status, report=received.report, duplicate=True
+        )
+
+    return await process_upload(received.upload_id, session, storage)

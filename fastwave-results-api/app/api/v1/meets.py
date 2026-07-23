@@ -1,11 +1,16 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import PageParams, get_published_meet, pagination
 from app.api.v1.results_common import build_result_rows, result_sort_key
+from app.audit import write_audit_log
+from app.auth.deps import require_admin
 from app.db import get_db
-from app.models import Club, Meet, MeetEvent, RelayLeg, Result
+from app.models import Club, Meet, MeetEvent, RelayLeg, Result, User
+from app.schemas.admin import MeetPublishResponse
 from app.schemas.public import (
     ClubEventGroup,
     ClubResultsResponse,
@@ -235,3 +240,37 @@ async def get_club_results(
         club=MeetClubSummary(code=club.code, name=club.name, resultCount=len(results)),
         events=event_groups,
     )
+
+
+@router.post("/meets/{meetId}/publish", response_model=MeetPublishResponse)
+async def publish_meet(
+    meetId: str,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+) -> Meet:
+    meet = await session.get(Meet, meetId)
+    if meet is None:
+        raise HTTPException(status_code=404, detail="Meet not found")
+
+    meet.publishedAt = datetime.now(timezone.utc)
+    await write_audit_log(session, "meet.publish", admin.id, entity=f"meets:{meet.id}")
+    await session.commit()
+    await session.refresh(meet)
+    return meet
+
+
+@router.post("/meets/{meetId}/unpublish", response_model=MeetPublishResponse)
+async def unpublish_meet(
+    meetId: str,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+) -> Meet:
+    meet = await session.get(Meet, meetId)
+    if meet is None:
+        raise HTTPException(status_code=404, detail="Meet not found")
+
+    meet.publishedAt = None
+    await write_audit_log(session, "meet.unpublish", admin.id, entity=f"meets:{meet.id}")
+    await session.commit()
+    await session.refresh(meet)
+    return meet

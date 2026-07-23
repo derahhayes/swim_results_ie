@@ -11,6 +11,20 @@ a real provider later only touches this one module.
 import logging
 
 logger = logging.getLogger("app.email")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    # Nothing in this app calls logging.basicConfig() / configures the root
+    # logger, so with no handler here, logger.info() below would be
+    # silently dropped everywhere (Python's logging default is WARNING,
+    # and the root logger's "handler of last resort" only emits WARNING+)
+    # - there'd be no EMAIL log line to find in Railway's logs at all,
+    # regardless of which log view you check. propagate=False keeps this
+    # self-contained rather than depending on root logger config existing
+    # (or not existing twice) elsewhere.
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(message)s"))
+    logger.addHandler(_handler)
+    logger.propagate = False
 
 TEMPLATES: dict[str, dict[str, str]] = {
     "verify_email": {
